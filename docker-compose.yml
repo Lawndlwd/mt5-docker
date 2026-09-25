@@ -1,0 +1,77 @@
+# MT5 API on Linux: real Windows (dockur/windows, KVM) + Linux gateway.
+#
+#   clients -> gateway:8080 (Linux, public) -> windows:9001..900N (MT5 workers, internal only)
+#
+# Deploy on Dokploy as a "Docker Compose" service with Compose Path:
+#   ./mt5-docker/docker-compose.yml
+# Only the `gateway` service should get a domain. See mt5-docker/README.md.
+
+name: mt5-api
+
+services:
+  windows:
+    image: dockurr/windows:${DOCKUR_TAG:-6.05}
+    environment:
+      VERSION: ${WINDOWS_VERSION:-11l}          # Windows 11 LTSC (supported to 2034, no bloat)
+      RAM_SIZE: ${WINDOWS_RAM:-6G}
+      CPU_CORES: ${WINDOWS_CPUS:-4}
+      DISK_SIZE: ${WINDOWS_DISK:-64G}
+      USERNAME: ${WINDOWS_USER:-Docker}
+      PASSWORD: ${WINDOWS_PASSWORD:-admin}
+      KEY: ${WINDOWS_KEY:-}                     # optional product key for activation
+      # Worker ports; only used if the container falls back to user-mode networking
+      # (NAT mode, the default with /dev/net/tun, already forwards every port).
+      USER_PORTS: "9001,9002,9003,9004,9005,9006,9007,9008"
+    devices:
+      - /dev/kvm
+      - /dev/net/tun
+    cap_add:
+      - NET_ADMIN
+    ports:
+      # Web viewer for the Windows desktop (install progress / debugging).
+      # Bound to localhost by default: use an SSH tunnel to reach it.
+      - "${VIEWER_BIND:-127.0.0.1}:${VIEWER_PORT:-8006}:8006"
+    volumes:
+      - windows-storage:/storage
+      # Copied to C:\OEM and install.bat run once at the end of Windows setup.
+      - ./windows/oem:/oem:ro
+      # Exposed to Windows as \\host.lan\Data (drive Z:). Synced into the VM on every boot,
+      # so redeploying the repo updates the app without reinstalling Windows.
+      - ./app:/shared/app:ro
+      - ./requirements.txt:/shared/requirements.txt:ro
+      - ./windows/runtime:/shared/runtime:ro
+    configs:
+      - source: mt5-settings
+        target: /shared/settings/settings.env
+    restart: unless-stopped
+    stop_grace_period: 2m
+
+  gateway:
+    build: ./gateway
+    environment:
+      WORKER_HOST: windows
+      WORKER_BASE_PORT: 9001
+      MT5_INSTANCES: ${MT5_INSTANCES:-2}
+      GATEWAY_API_KEY: ${GATEWAY_API_KEY:-}     # if set, clients must send X-API-Key
+      QUEUE_TIMEOUT: ${QUEUE_TIMEOUT:-60}       # seconds to wait for a free terminal
+      REQUEST_TIMEOUT: ${REQUEST_TIMEOUT:-120}  # seconds for a single MT5 call
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    expose:
+      - "8080"
+    ports:
+      # Dokploy: remove this line and attach a domain to gateway:8080 instead.
+      - "${GATEWAY_BIND:-0.0.0.0}:${GATEWAY_PORT:-8070}:8080"
+    depends_on:
+      - windows
+    restart: unless-stopped
+
+configs:
+  # Read by the Windows side on every boot (\\host.lan\Data\settings\settings.env).
+  mt5-settings:
+    content: |
+      MT5_INSTANCES=${MT5_INSTANCES:-2}
+      WORKER_BASE_PORT=9001
+      LOG_LEVEL=${LOG_LEVEL:-info}
+
+volumes:
+  windows-storage:
