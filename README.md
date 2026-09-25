@@ -39,7 +39,6 @@ No Wine: the MT5 terminal and the `MetaTrader5` Python package run on actual Win
 3. **Environment**: paste from `.env.example` and adjust. At least set:
    - `GATEWAY_API_KEY` = a long random string
    - `WINDOWS_PASSWORD` = something other than `admin`
-   - `GATEWAY_BIND=127.0.0.1` (only Traefik should expose the API)
 4. **Domains** → add a domain → service **`gateway`**, port **`8080`**, HTTPS on.
    Never add a domain for `windows`.
 5. **Deploy.** The first deploy downloads Windows (~5 GB) and installs it unattended,
@@ -61,7 +60,7 @@ cd mt5-docker
 cp .env.example .env     # edit it
 docker compose up -d --build
 docker compose logs -f windows   # installation progress
-curl localhost:8070/gateway/health
+docker compose exec gateway python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8080/gateway/health').read().decode())"
 ```
 
 ## Using the API

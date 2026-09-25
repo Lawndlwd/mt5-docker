@@ -56,11 +56,9 @@ services:
       QUEUE_TIMEOUT: ${QUEUE_TIMEOUT:-60}       # seconds to wait for a free terminal
       REQUEST_TIMEOUT: ${REQUEST_TIMEOUT:-120}  # seconds for a single MT5 call
       LOG_LEVEL: ${LOG_LEVEL:-info}
+    # Dokploy: attach the domain to gateway:8080 (no host port published).
     expose:
       - "8080"
-    ports:
-      # Dokploy: remove this line and attach a domain to gateway:8080 instead.
-      - "${GATEWAY_BIND:-0.0.0.0}:${GATEWAY_PORT:-8070}:8080"
     depends_on:
       - windows
     restart: unless-stopped
