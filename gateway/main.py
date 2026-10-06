@@ -146,8 +146,11 @@ async def probe_worker(worker: str) -> dict:
     try:
         r = await client.get(f"{worker}/health", timeout=8)
         body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
-        return {"worker": worker, "up": r.status_code == 200, "state": body.get("state"),
-                "ms": round((time.monotonic() - started) * 1000)}
+        out = {"worker": worker, "up": r.status_code == 200, "state": body.get("state"),
+               "ms": round((time.monotonic() - started) * 1000)}
+        if body.get("error"):
+            out["error"] = body["error"]  # e.g. MT5's own reason the terminal won't start
+        return out
     except httpx.HTTPError as e:
         return {"worker": worker, "up": False, "error": type(e).__name__}
 

@@ -33,7 +33,11 @@ IPC_ERRORS = {-10001, -10002, -10003, -10004, -10005}  # terminal not running / 
 
 # One MT5 call sequence (login + reads) at a time: held for the whole request.
 _lock = threading.Lock()
-_session = {"key": None, "login": None, "busy_since": None, "starting": False}
+_session = {"key": None, "login": None, "busy_since": None, "starting": False,
+            "init_error": None, "last_try": 0.0}
+
+# While the terminal is down, /health retries opening it at most this often (seconds).
+RETRY_START_S = 30
 
 # Busy longer than this = the terminal is considered frozen (supervisor restarts the worker).
 STUCK_AFTER_S = 180
@@ -73,9 +77,12 @@ def ensure_terminal() -> None:
     _session["key"] = _session["login"] = None
     _session["starting"] = True
     try:
+        _session["last_try"] = time.monotonic()
         if not mt5.initialize(timeout=INIT_TIMEOUT_MS):
             code, msg = _last_error()
+            _session["init_error"] = f"({code}) {msg}"
             raise MT5Error("terminal", code, msg)
+        _session["init_error"] = None
     finally:
         _session["starting"] = False
 
@@ -142,7 +149,11 @@ def health_status() -> dict:
     try:
         ti = mt5.terminal_info()
         if ti is None:
-            return {"state": "down"}
+            # Self-heal: try to open the terminal again (in the background, throttled).
+            if time.monotonic() - _session["last_try"] > RETRY_START_S:
+                _session["last_try"] = time.monotonic()
+                warm_up()
+            return {"state": "down", "error": _session["init_error"]}
         return {
             "state": "up",
             "connected": bool(getattr(ti, "connected", False)),
