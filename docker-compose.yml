@@ -3,8 +3,8 @@
 #   clients -> gateway:8080 (Linux, public) -> windows:9001..900N (MT5 workers, internal only)
 #
 # Deploy on Dokploy as a "Docker Compose" service with Compose Path:
-#   ./mt5-docker/docker-compose.yml
-# Only the `gateway` service should get a domain. See mt5-docker/README.md.
+#   ./docker-compose.yml
+# Only the `gateway` service should get a domain. See README.md.
 
 name: mt5-api
 

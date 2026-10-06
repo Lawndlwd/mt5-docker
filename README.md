@@ -36,7 +36,7 @@ No Wine: the MT5 terminal and the `MetaTrader5` Python package run on actual Win
 ## Deploy on Dokploy
 
 1. **Create → Compose** (type *Docker Compose*), source = this Git repo/branch.
-2. **Compose Path**: `./mt5-docker/docker-compose.yml`
+2. **Compose Path**: `./docker-compose.yml`
 3. **Environment**: paste from `.env.example` and adjust. At least set:
    - `GATEWAY_API_KEY` = a long random string
    - `WINDOWS_PASSWORD` = something other than `admin`
