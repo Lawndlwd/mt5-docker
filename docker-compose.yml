@@ -9,6 +9,20 @@
 name: mt5-api
 
 services:
+  # Runs once per deploy: copies app/, requirements.txt, windows/runtime/ and the
+  # settings into the `shared` volume. Exits when done (shown as "exited", that's normal).
+  sync:
+    build:
+      context: .
+      dockerfile: sync/Dockerfile
+    environment:
+      MT5_INSTANCES: ${MT5_INSTANCES:-2}
+      WORKER_BASE_PORT: 9001
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - shared:/shared
+    restart: "no"
+
   windows:
     image: dockurr/windows:${DOCKUR_TAG:-6.05}
     environment:
@@ -35,16 +49,27 @@ services:
       - windows-storage:/storage
       # Copied to C:\OEM and install.bat run once at the end of Windows setup.
       - ./windows/oem:/oem:ro
-      # Exposed to Windows as \\host.lan\Data (drive Z:). Synced into the VM on every boot,
-      # so redeploying the repo updates the app without reinstalling Windows.
-      - ./app:/shared/app:ro
-      - ./requirements.txt:/shared/requirements.txt:ro
-      - ./windows/runtime:/shared/runtime:ro
-    configs:
-      - source: mt5-settings
-        target: /shared/settings/settings.env
+      # Exposed to Windows as \\host.lan\Data (drive Z:), filled by the `sync` service.
+      # The VM resyncs from it on every boot and within ~20 s of a change, so
+      # redeploying the repo updates the app without reinstalling Windows.
+      - shared:/shared
+    depends_on:
+      sync:
+        condition: service_completed_successfully
     restart: unless-stopped
     stop_grace_period: 2m
+    # Healthy while worker 1 answers inside the VM (VM address in NAT mode: 20.20.20.21).
+    # Restarting Windows is heavy, so autoheal only acts on it when WINDOWS_AUTOHEAL=true,
+    # and only after ~10 min of failures. Frozen MT5 terminals are handled earlier by the
+    # supervisor watchdog inside the VM; this is the last resort for a hung VM.
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/$${VM_IP:-20.20.20.21}/9001' || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 10
+      start_period: 20m
+    labels:
+      autoheal: "${WINDOWS_AUTOHEAL:-false}"
 
   gateway:
     build: ./gateway
@@ -55,6 +80,7 @@ services:
       GATEWAY_API_KEY: ${GATEWAY_API_KEY:-}     # if set, clients must send X-API-Key
       QUEUE_TIMEOUT: ${QUEUE_TIMEOUT:-60}       # seconds to wait for a free terminal
       REQUEST_TIMEOUT: ${REQUEST_TIMEOUT:-120}  # seconds for a single MT5 call
+      HEALTH_INTERVAL: ${HEALTH_INTERVAL:-15}   # seconds between worker health probes
       LOG_LEVEL: ${LOG_LEVEL:-info}
     # Dokploy: attach the domain to gateway:8080 (no host port published).
     expose:
@@ -62,14 +88,21 @@ services:
     depends_on:
       - windows
     restart: unless-stopped
+    labels:
+      autoheal: "true"   # restarted by `autoheal` when its HEALTHCHECK (Dockerfile) fails
 
-configs:
-  # Read by the Windows side on every boot (\\host.lan\Data\settings\settings.env).
-  mt5-settings:
-    content: |
-      MT5_INSTANCES=${MT5_INSTANCES:-2}
-      WORKER_BASE_PORT=9001
-      LOG_LEVEL=${LOG_LEVEL:-info}
+  # Restarts containers labelled autoheal=true when Docker marks them unhealthy
+  # (Docker's restart policy only reacts to a container exiting, not to "unhealthy").
+  # Needs the Docker socket (read/write): keep this service internal, no ports.
+  autoheal:
+    image: willfarrell/autoheal:1.2.0
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+      AUTOHEAL_INTERVAL: 30
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
 
 volumes:
   windows-storage:
+  shared:

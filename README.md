@@ -18,8 +18,9 @@ No Wine: the MT5 terminal and the `MetaTrader5` Python package run on actual Win
   terminal folder, so two users can never end up on the same logged-in terminal.
 - **Gateway** passes every request through unchanged (same URLs and JSON as the app)
   and sends at most one request to each worker at a time. Extra requests wait in a queue.
-- **Code updates**: `mt5-docker/app/`, `mt5-docker/requirements.txt` and `windows/runtime/` are
-  shared into the VM. On every boot, and within ~20 s of a redeploy, the VM resyncs them,
+- **Code updates**: on every deploy the `sync` service copies `mt5-docker/app/`,
+  `mt5-docker/requirements.txt` and `windows/runtime/` into the `shared` volume, which the VM
+  sees as `\\host.lan\Data`. On every boot, and within ~20 s of a redeploy, the VM resyncs them,
   reinstalls requirements if they changed, and restarts the workers. Windows is
   **not** reinstalled.
 
@@ -50,8 +51,11 @@ No Wine: the MT5 terminal and the `MetaTrader5` Python package run on actual Win
 > Keep the `windows-storage` volume. It holds the installed Windows disk. Deleting it
 > means a full reinstall.
 >
-> Changing `MT5_INSTANCES` recreates the `windows` container (Windows reboots, about 1–2 min).
-> New terminal folders are created automatically.
+> Changing `MT5_INSTANCES` only restarts the workers (within ~20 s). New terminal folders
+> are created automatically.
+>
+> The `sync` service shows as *exited* after each deploy. That's normal: it copies the
+> app into the `shared` volume and stops.
 
 ## Run without Dokploy
 
@@ -109,7 +113,8 @@ Useful files inside Windows:
 | File | Role |
 |---|---|
 | `app/`, `requirements.txt` | The API that runs inside Windows (copied from the repo root; edit here for deploys) |
-| `docker-compose.yml` | The two services, the persistent volume, settings passed into the VM |
+| `docker-compose.yml` | The services, the persistent volumes, settings passed into the VM |
+| `sync/` | Copies the app, runtime scripts and settings into the `shared` volume on every deploy |
 | `gateway/` | Linux proxy: queue, one request per terminal, API key, health |
 | `windows/oem/install.bat`, `install.ps1` | Run once by dockur after Windows setup: Python, MT5, firewall, no sleep/lock, logon hook |
 | `windows/runtime/start.ps1` | Every boot: sync code, pip install if needed, create terminals, run supervisor |

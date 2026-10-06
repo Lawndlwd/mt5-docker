@@ -16,6 +16,7 @@ class AccountInfoResponse(BaseModel):
     currency: str
     name: Optional[str]
     login: int
+    trade_allowed: Optional[bool] = None
 
 class HistoryQuery(BaseModel):
     from_date: Optional[datetime]
