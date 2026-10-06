@@ -33,7 +33,7 @@ IPC_ERRORS = {-10001, -10002, -10003, -10004, -10005}  # terminal not running / 
 
 # One MT5 call sequence (login + reads) at a time: held for the whole request.
 _lock = threading.Lock()
-_session = {"key": None, "login": None, "busy_since": None}
+_session = {"key": None, "login": None, "busy_since": None, "starting": False}
 
 # Busy longer than this = the terminal is considered frozen (supervisor restarts the worker).
 STUCK_AFTER_S = 180
@@ -70,10 +70,27 @@ def ensure_terminal() -> None:
     if mt5.terminal_info() is not None:
         return
     logger.info("Starting MT5 terminal")
-    _session["key"] = None
-    if not mt5.initialize(timeout=INIT_TIMEOUT_MS):
-        code, msg = _last_error()
-        raise MT5Error("terminal", code, msg)
+    _session["key"] = _session["login"] = None
+    _session["starting"] = True
+    try:
+        if not mt5.initialize(timeout=INIT_TIMEOUT_MS):
+            code, msg = _last_error()
+            raise MT5Error("terminal", code, msg)
+    finally:
+        _session["starting"] = False
+
+
+def warm_up() -> None:
+    """Opens the terminal at worker start, in the background: the HTTP server listens at once
+    and /health reports "starting" until MT5 answers (it never blocks the worker)."""
+    def run():
+        with _lock:
+            try:
+                ensure_terminal()
+                logger.info("MT5 terminal ready")
+            except MT5Error as e:
+                logger.error(f"MT5 terminal did not start: {e}")
+    threading.Thread(target=run, name="mt5-warmup", daemon=True).start()
 
 
 def _login(login_id: int, password: str, server: str) -> None:
@@ -111,11 +128,14 @@ def session(login_id: int, password: str, server: str):
 def health_status() -> dict:
     """Worker health for the gateway and the supervisor watchdog.
 
-    up    = terminal answers (or the worker is busy with a normal-length request)
+    up       = terminal answers (or the worker is busy with a normal-length request)
+    starting = MT5 is opening (not ready for requests yet)
     stuck = a request has been running longer than STUCK_AFTER_S
     down  = the terminal is not running
     """
     if not _lock.acquire(timeout=0.5):
+        if _session["starting"]:
+            return {"state": "starting"}
         since = _session["busy_since"]
         busy_s = round(time.monotonic() - since) if since else 0
         return {"state": "stuck" if busy_s > STUCK_AFTER_S else "busy", "busy_s": busy_s}

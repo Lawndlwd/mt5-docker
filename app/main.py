@@ -9,8 +9,8 @@ from loguru import logger
 
 from app.schemas import MT5Credentials, AccountInfoResponse, HistoryResponse, PositionsResponse, OrdersResponse
 from app.mt5_service import (
-    MT5Error, ensure_terminal, get_account_info, get_account_history, get_orders, get_positions,
-    health_status, session,
+    MT5Error, get_account_info, get_account_history, get_orders, get_positions,
+    health_status, session, warm_up,
 )
 from app.dependencies import setup_logging
 
@@ -88,11 +88,8 @@ def parse_dt(value: str = None):
 
 @app.on_event("startup")
 def warm_terminal():
-    """Start the terminal once at boot so the first request doesn't pay for it."""
-    try:
-        ensure_terminal()
-    except MT5Error as e:
-        logger.error(f"MT5 terminal did not start: {e}")
+    """Open MT5 at boot without blocking: the worker answers /health immediately."""
+    warm_up()
 
 
 @app.post("/api/account/info", response_model=AccountInfoResponse)
