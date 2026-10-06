@@ -27,10 +27,11 @@ BASE_PORT = int(os.environ.get("WORKER_BASE_PORT", "9001"))
 MAX_LOG_BYTES = 20 * 1024 * 1024
 WATCH_INTERVAL = 20
 HEALTH_INTERVAL = int(os.environ.get("HEALTH_INTERVAL", "30"))
-HEALTH_FAILURES = int(os.environ.get("HEALTH_FAILURES", "3"))
+HEALTH_FAILURES = int(os.environ.get("HEALTH_FAILURES", "5"))
 HEALTH_TIMEOUT = 10
-# Opening MT5 at worker start can take a minute or more: don't judge before this.
-START_GRACE = int(os.environ.get("START_GRACE", "180"))
+# The worker's web server is up within seconds; MT5 itself opens on the first request (with
+# that account) and freezes the worker for up to ~60 s, so allow several missed probes.
+START_GRACE = int(os.environ.get("START_GRACE", "60"))
 
 
 def terminal_path(i: int) -> str:
@@ -53,10 +54,8 @@ def probe(i: int) -> tuple:
         return False, type(e).__name__
 
 
-def kill_worker(i: int, proc) -> None:
-    """Stops the worker process tree and the MT5 terminal it drives."""
-    if proc is not None and proc.poll() is None:
-        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True)
+def kill_terminal(i: int) -> None:
+    """Closes the MT5 terminal at this worker's path (a leftover one may be frozen on a dialog)."""
     path = terminal_path(i).replace("'", "''")
     subprocess.run(
         ["powershell", "-NoProfile", "-Command",
@@ -64,6 +63,13 @@ def kill_worker(i: int, proc) -> None:
          f"Where-Object {{ $_.Path -eq '{path}' }} | Stop-Process -Force"],
         capture_output=True,
     )
+
+
+def kill_worker(i: int, proc) -> None:
+    """Stops the worker process tree and the MT5 terminal it drives."""
+    if proc is not None and proc.poll() is None:
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True)
+    kill_terminal(i)
 
 
 def log(message: str) -> None:
@@ -88,6 +94,7 @@ def share_fingerprint():
 
 
 def spawn(i: int) -> subprocess.Popen:
+    kill_terminal(i)  # start clean: never attach to a leftover (possibly frozen) terminal
     log_path = LOGS / f"worker-{i}.log"
     if log_path.exists() and log_path.stat().st_size > MAX_LOG_BYTES:
         log_path.replace(log_path.with_suffix(".log.1"))

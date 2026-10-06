@@ -10,7 +10,7 @@ from loguru import logger
 from app.schemas import MT5Credentials, AccountInfoResponse, HistoryResponse, PositionsResponse, OrdersResponse
 from app.mt5_service import (
     MT5Error, get_account_info, get_account_history, get_orders, get_positions,
-    health_status, session, warm_up,
+    health_status, session,
 )
 from app.dependencies import setup_logging
 
@@ -84,12 +84,6 @@ def mt5_session(credentials: MT5Credentials):
 
 def parse_dt(value: str = None):
     return datetime.fromisoformat(value) if value else None
-
-
-@app.on_event("startup")
-def warm_terminal():
-    """Open MT5 at boot without blocking: the worker answers /health immediately."""
-    warm_up()
 
 
 @app.post("/api/account/info", response_model=AccountInfoResponse)

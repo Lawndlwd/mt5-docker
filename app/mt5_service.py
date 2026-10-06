@@ -1,8 +1,8 @@
 # mt5_service.py
 """One long-lived MT5 terminal per worker process.
 
-The terminal is started once (mt5.initialize without credentials) and stays open.
-A request switches accounts with mt5.login() inside that terminal, instead of
+The terminal is opened on the first request, with that request's account (an MT5 opened
+without an account blocks on its login window), and then stays open. Later requests switch accounts with mt5.login() inside that terminal, instead of
 starting and shutting down a terminal on every call (that took seconds and often
 timed out before the login finished, which surfaced as "wrong password").
 
@@ -25,7 +25,7 @@ from loguru import logger
 server_tz = pytz.timezone('Europe/London')  # Common for many brokers
 
 LOGIN_TIMEOUT_MS = 30_000
-INIT_TIMEOUT_MS = 90_000
+INIT_TIMEOUT_MS = 60_000
 
 # MT5 last_error codes (MetaTrader5 Python docs).
 AUTH_FAILED = -6  # wrong login/password, or the account is unknown on that server
@@ -33,14 +33,11 @@ IPC_ERRORS = {-10001, -10002, -10003, -10004, -10005}  # terminal not running / 
 
 # One MT5 call sequence (login + reads) at a time: held for the whole request.
 _lock = threading.Lock()
-_session = {"key": None, "login": None, "busy_since": None, "starting": False,
-            "init_error": None, "last_try": 0.0}
-
-# While the terminal is down, /health retries opening it at most this often (seconds).
-RETRY_START_S = 30
+_session = {"key": None, "login": None, "busy_since": None, "last_error": None}
 
 # Busy longer than this = the terminal is considered frozen (supervisor restarts the worker).
 STUCK_AFTER_S = 180
+
 
 class MT5Error(Exception):
     """Login/terminal failure carrying MT5's own code and message."""
@@ -69,54 +66,41 @@ def _key(login: int, server: str, password: str) -> str:
     return hashlib.sha256(f"{login}\x00{server}\x00{password}".encode()).hexdigest()
 
 
-def ensure_terminal() -> None:
-    """Starts this worker's terminal if it is not running (worker.py adds the path)."""
-    if mt5.terminal_info() is not None:
-        return
-    logger.info("Starting MT5 terminal")
+def _fail(login_id: int, server: str, shutdown: bool) -> MT5Error:
+    code, msg = _last_error()
     _session["key"] = _session["login"] = None
-    _session["starting"] = True
-    try:
-        _session["last_try"] = time.monotonic()
-        if not mt5.initialize(timeout=INIT_TIMEOUT_MS):
-            code, msg = _last_error()
-            _session["init_error"] = f"({code}) {msg}"
-            raise MT5Error("terminal", code, msg)
-        _session["init_error"] = None
-    finally:
-        _session["starting"] = False
-
-
-def warm_up() -> None:
-    """Opens the terminal at worker start, in the background: the HTTP server listens at once
-    and /health reports "starting" until MT5 answers (it never blocks the worker)."""
-    def run():
-        with _lock:
-            try:
-                ensure_terminal()
-                logger.info("MT5 terminal ready")
-            except MT5Error as e:
-                logger.error(f"MT5 terminal did not start: {e}")
-    threading.Thread(target=run, name="mt5-warmup", daemon=True).start()
+    _session["last_error"] = f"({code}) {msg}"
+    if shutdown:
+        mt5.shutdown()  # terminal gone or never answered: the next request starts a fresh one
+    logger.warning(f"Login {login_id}@{server} failed: ({code}) {msg}")
+    return MT5Error(_kind(code), code, msg)
 
 
 def _login(login_id: int, password: str, server: str) -> None:
-    """Makes `login_id` the active account (caller holds _lock). Raises MT5Error."""
+    """Makes `login_id` the active account (caller holds _lock). Raises MT5Error.
+
+    The terminal is opened lazily, WITH the account's credentials: an MT5 opened without an
+    account shows its login / "open an account" window and never answers (IPC timeout). Once
+    open it stays open, and later requests switch accounts with mt5.login().
+    """
     key = _key(login_id, server, password)
-    ensure_terminal()
-    info = mt5.account_info()
-    if _session["key"] == key and info is not None and info.login == login_id:
-        return  # same account and password: reuse the live session
     started = time.monotonic()
-    if not mt5.login(login_id, password=password, server=server, timeout=LOGIN_TIMEOUT_MS):
-        code, msg = _last_error()
+    if mt5.terminal_info() is None:
+        logger.info(f"Starting MT5 terminal for {login_id}@{server}")
         _session["key"] = _session["login"] = None
-        if code in IPC_ERRORS:
-            mt5.shutdown()  # terminal died: the next request starts a fresh one
-        logger.warning(f"Login {login_id}@{server} failed: ({code}) {msg}")
-        raise MT5Error(_kind(code), code, msg)
+        if not mt5.initialize(login=login_id, password=password, server=server, timeout=INIT_TIMEOUT_MS):
+            code, _ = _last_error()
+            raise _fail(login_id, server, shutdown=code in IPC_ERRORS)
+    else:
+        info = mt5.account_info()
+        if _session["key"] == key and info is not None and info.login == login_id:
+            return  # same account and password: reuse the live session
+        if not mt5.login(login_id, password=password, server=server, timeout=LOGIN_TIMEOUT_MS):
+            code, _ = _last_error()
+            raise _fail(login_id, server, shutdown=code in IPC_ERRORS)
     _session["key"] = key
     _session["login"] = login_id
+    _session["last_error"] = None
     logger.info(f"Logged in {login_id}@{server} in {round((time.monotonic() - started) * 1000)} ms")
 
 
@@ -135,29 +119,23 @@ def session(login_id: int, password: str, server: str):
 def health_status() -> dict:
     """Worker health for the gateway and the supervisor watchdog.
 
-    up       = terminal answers (or the worker is busy with a normal-length request)
-    starting = MT5 is opening (not ready for requests yet)
-    stuck = a request has been running longer than STUCK_AFTER_S
-    down  = the terminal is not running
+    up    = ready: terminal open, or not opened yet (it opens on the first request, with that
+            request's account); `terminal` says which
+    busy  = a request is running (normal length)
+    stuck = a request has been running longer than STUCK_AFTER_S (watchdog restarts the worker)
     """
     if not _lock.acquire(timeout=0.5):
-        if _session["starting"]:
-            return {"state": "starting"}
         since = _session["busy_since"]
         busy_s = round(time.monotonic() - since) if since else 0
         return {"state": "stuck" if busy_s > STUCK_AFTER_S else "busy", "busy_s": busy_s}
     try:
         ti = mt5.terminal_info()
-        if ti is None:
-            # Self-heal: try to open the terminal again (in the background, throttled).
-            if time.monotonic() - _session["last_try"] > RETRY_START_S:
-                _session["last_try"] = time.monotonic()
-                warm_up()
-            return {"state": "down", "error": _session["init_error"]}
         return {
             "state": "up",
-            "connected": bool(getattr(ti, "connected", False)),
+            "terminal": "open" if ti is not None else "closed",
+            "connected": bool(getattr(ti, "connected", False)) if ti is not None else False,
             "login": _session["login"],
+            **({"error": _session["last_error"]} if _session["last_error"] else {}),
         }
     finally:
         _lock.release()
