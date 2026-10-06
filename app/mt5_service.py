@@ -2,7 +2,7 @@
 """One long-lived MT5 terminal per worker process.
 
 The terminal is opened on the first request, with that request's account (an MT5 opened
-without an account blocks on its login window), and then stays open. Later requests switch accounts with mt5.login() inside that terminal, instead of
+without an account blocks on its login window), and then stays open. Later requests switch accounts inside that terminal (initialize with credentials), instead of
 starting and shutting down a terminal on every call (that took seconds and often
 timed out before the login finished, which surfaced as "wrong password").
 
@@ -24,7 +24,6 @@ from loguru import logger
 
 server_tz = pytz.timezone('Europe/London')  # Common for many brokers
 
-LOGIN_TIMEOUT_MS = 30_000
 INIT_TIMEOUT_MS = 60_000
 
 # MT5 last_error codes (MetaTrader5 Python docs).
@@ -81,23 +80,30 @@ def _login(login_id: int, password: str, server: str) -> None:
 
     The terminal is opened lazily, WITH the account's credentials: an MT5 opened without an
     account shows its login / "open an account" window and never answers (IPC timeout). Once
-    open it stays open, and later requests switch accounts with mt5.login().
+    open it stays open, and later requests switch accounts with initialize(credentials).
     """
     key = _key(login_id, server, password)
     started = time.monotonic()
-    if mt5.terminal_info() is None:
-        logger.info(f"Starting MT5 terminal for {login_id}@{server}")
-        _session["key"] = _session["login"] = None
-        if not mt5.initialize(login=login_id, password=password, server=server, timeout=INIT_TIMEOUT_MS):
-            code, _ = _last_error()
-            raise _fail(login_id, server, shutdown=code in IPC_ERRORS)
-    else:
+    if mt5.terminal_info() is not None:
         info = mt5.account_info()
         if _session["key"] == key and info is not None and info.login == login_id:
             return  # same account and password: reuse the live session
-        if not mt5.login(login_id, password=password, server=server, timeout=LOGIN_TIMEOUT_MS):
-            code, _ = _last_error()
-            raise _fail(login_id, server, shutdown=code in IPC_ERRORS)
+    # Credentials always go through initialize(): it opens the terminal if needed, otherwise
+    # attaches to the running one and authorizes on THIS server. mt5.login() on a terminal that
+    # was on another broker kept the old server (journal: "'878865': authorization on
+    # MetaQuotes-Demo failed" for a MEXAtlantic-Real account).
+    logger.info(f"Connecting {login_id}@{server}")
+    _session["key"] = _session["login"] = None
+    if not mt5.initialize(login=login_id, password=password, server=server, timeout=INIT_TIMEOUT_MS):
+        code, _ = _last_error()
+        raise _fail(login_id, server, shutdown=code in IPC_ERRORS)
+    info = mt5.account_info()
+    if info is None or info.login != login_id or (getattr(info, "server", server) or server) != server:
+        # Never serve another account's data: the terminal must really be on the requested one.
+        actual = f"{getattr(info, 'login', None)}@{getattr(info, 'server', None)}"
+        logger.warning(f"Asked {login_id}@{server}, terminal is on {actual}")
+        _session["last_error"] = f"terminal is on {actual}"
+        raise MT5Error("auth", -6, f"Terminal is on {actual}, not {login_id}@{server}")
     _session["key"] = key
     _session["login"] = login_id
     _session["last_error"] = None
