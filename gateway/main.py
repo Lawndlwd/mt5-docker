@@ -226,10 +226,52 @@ async def gateway_health(request: Request) -> JSONResponse:
     )
 
 
+def worker_url(request: Request) -> Optional[str]:
+    try:
+        n = int(request.query_params.get("worker", "1"))
+    except ValueError:
+        return None
+    return WORKERS[n - 1] if 1 <= n <= len(WORKERS) else None
+
+
+@app.get("/gateway/logs")
+async def gateway_logs(request: Request) -> JSONResponse:
+    """?worker=N&lines=200: that worker's log, the supervisor log, its MT5 Journal and the
+    [Experts] settings of its terminal. Bypasses the queue (works while the worker is busy)."""
+    if not authorized(request):
+        return unauthorized()
+    worker = worker_url(request)
+    if not worker:
+        return JSONResponse(status_code=400, content={"detail": f"worker must be 1..{len(WORKERS)}"})
+    try:
+        r = await client.get(f"{worker}/logs", params={"lines": request.query_params.get("lines", "200")}, timeout=15)
+        return JSONResponse(status_code=r.status_code, content=r.json())
+    except (httpx.HTTPError, ValueError) as e:
+        return JSONResponse(status_code=502, content={"detail": f"{worker} unreachable: {type(e).__name__}"})
+
+
+@app.post("/gateway/restart")
+async def gateway_restart(request: Request) -> JSONResponse:
+    """?worker=N: the worker exits; the supervisor restarts it with a fresh terminal."""
+    if not authorized(request):
+        return unauthorized()
+    worker = worker_url(request)
+    if not worker:
+        return JSONResponse(status_code=400, content={"detail": f"worker must be 1..{len(WORKERS)}"})
+    sched.set_health(worker, False)  # back in rotation once a probe sees the new one up
+    try:
+        r = await client.post(f"{worker}/restart", timeout=10)
+        return JSONResponse(status_code=r.status_code, content=r.json())
+    except (httpx.HTTPError, ValueError) as e:
+        return JSONResponse(status_code=502, content={"detail": f"{worker} unreachable: {type(e).__name__}"})
+
+
 @app.api_route("/{path:path}", methods=["GET", "POST"])
 async def proxy(path: str, request: Request) -> Response:
     if not authorized(request):
         return unauthorized()
+    if path in ("logs", "restart"):  # worker diagnostics: only via /gateway/logs, /gateway/restart
+        return JSONResponse(status_code=404, content={"detail": "Not found"})
 
     body = await request.body()
     login = login_of(body)

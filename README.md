@@ -88,6 +88,8 @@ curl -X POST https://<domain>/api/account/info \
 | `GET /gateway/ping` | Gateway liveness (Docker healthcheck). The only route without the API key |
 | `GET /gateway/health` | Probes each worker: state and last MT5 error. `200` if at least one is up |
 | `GET /gateway/queue` | Load and estimated wait for a new request |
+| `GET /gateway/logs?worker=N&lines=200` | Worker N's log, the supervisor log, its MT5 Journal and `[Experts]` settings |
+| `POST /gateway/restart?worker=N` | Restart worker N with a fresh terminal (supervisor rewrites its MT5 settings) |
 | `POST /api/account/info`, `/api/account/history`, `/api/positions`, `/api/orders` | Forwarded to a free worker |
 
 Status codes: `401` bad/missing API key or MT5 refused the login (wrong password / account

@@ -19,6 +19,7 @@ from app.schemas import (
     AccountInfoResponse, HistoryResponse, MT5Credentials, OrdersResponse, PositionsResponse,
 )
 from app.utils import setup_logging
+from app import diagnostics
 
 setup_logging()
 
@@ -36,6 +37,19 @@ def health_check():
         content={"status": "healthy" if ok else "unhealthy", **st,
                  "timestamp": datetime.now(timezone.utc).isoformat()},
     )
+
+
+# Reached only through the gateway's /gateway/logs and /gateway/restart (API key).
+@app.get("/logs")
+def logs(lines: int = 200):
+    return diagnostics.collect(max(10, min(lines, 2000)))
+
+
+@app.post("/restart")
+def restart():
+    logger.warning("Restart requested through the gateway")
+    diagnostics.restart_soon()
+    return {"restarting": True}
 
 
 @contextmanager

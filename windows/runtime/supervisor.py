@@ -142,6 +142,8 @@ def spawn(i: int) -> subprocess.Popen:
         os.environ,
         MT5_TERMINAL_PATH=terminal_path(i),
         WORKER_PORT=str(BASE_PORT + i - 1),
+        WORKER_LOG=str(log_path),
+        SUPERVISOR_LOG=str(LOGS / "supervisor.log"),
         PYTHONUNBUFFERED="1",
     )
     out = open(log_path, "a", encoding="utf-8")
