@@ -1,8 +1,8 @@
 # MT5 API on Linux (real Windows in Docker)
 
-Runs the FastAPI app in `app/` (a copy of the repo-root `app/`) **unchanged** on a Linux server, inside a real
-Windows 11 LTSC VM managed by [dockur/windows](https://github.com/dockur/windows) (KVM).
-No Wine: the MT5 terminal and the `MetaTrader5` Python package run on actual Windows.
+Runs the MT5 API in `app/` on a Linux server, inside a real Windows 11 LTSC VM managed by
+[dockur/windows](https://github.com/dockur/windows) (KVM). No Wine: the MT5 terminal and the
+`MetaTrader5` Python package run on actual Windows.
 
 ```
  clients ──► gateway :8080  (Linux container, public)
@@ -14,12 +14,19 @@ No Wine: the MT5 terminal and the `MetaTrader5` Python package run on actual Win
                └─ ...               (MT5_INSTANCES)
 ```
 
-- **Workers** run `app.main:app` as is. `worker.py` only pins each process to its own
-  terminal folder, so two users can never end up on the same logged-in terminal.
-- **Gateway** passes every request through unchanged (same URLs and JSON as the app)
-  and sends at most one request to each worker at a time. Extra requests wait in a queue.
-- **Code updates**: on every deploy the `sync` service copies `mt5-docker/app/`,
-  `mt5-docker/requirements.txt` and `windows/runtime/` into the `shared` volume, which the VM
+- **Workers** run `app.main:app`, one process per portable terminal (`C:\MT5\tN`), so two
+  users never share a logged-in terminal. A terminal opens on its first request (with that
+  account) and stays open; later requests switch accounts in it. The same account with the
+  same password reuses the live session; the result is checked against the requested
+  login and server before any data is returned.
+- **Gateway** passes requests through (same URLs and JSON as the workers), one per worker
+  at a time, first come first served, preferring a worker already on that account. It
+  probes workers every `HEALTH_INTERVAL` s and skips unhealthy ones.
+- **Supervisor** (in the VM) keeps one worker per terminal running, restarts frozen or
+  dead ones (watchdog on `/health`), and before each terminal start writes the MT5 settings
+  the Python API needs (algo trading on, not switched off on account change).
+- **Code updates**: on every deploy the `sync` service copies `app/`,
+  `requirements.txt` and `windows/runtime/` into the `shared` volume, which the VM
   sees as `\\host.lan\Data`. On every boot, and within ~20 s of a redeploy, the VM resyncs them,
   reinstalls requirements if they changed, and restarts the workers. Windows is
   **not** reinstalled.
@@ -45,8 +52,8 @@ No Wine: the MT5 terminal and the `MetaTrader5` Python package run on actual Win
 5. **Deploy.** The first deploy downloads Windows (~5 GB) and installs it unattended,
    then installs Python 3.12 + MT5 and starts the workers. Expect **30–45 min**.
    Later deploys take seconds.
-6. Check it: `https://<your-domain>/gateway/health` shows `workers_up` equal to
-   `MT5_INSTANCES` when everything is ready.
+6. Check it: `curl -H 'X-API-Key: <GATEWAY_API_KEY>' https://<your-domain>/gateway/health`
+   shows `healthy` equal to `MT5_INSTANCES` when everything is ready.
 
 > Keep the `windows-storage` volume. It holds the installed Windows disk. Deleting it
 > means a full reinstall.
@@ -60,7 +67,6 @@ No Wine: the MT5 terminal and the `MetaTrader5` Python package run on actual Win
 ## Run without Dokploy
 
 ```bash
-cd mt5-docker
 cp .env.example .env     # edit it
 docker compose up -d --build
 docker compose logs -f windows   # installation progress
@@ -79,12 +85,15 @@ curl -X POST https://<domain>/api/account/info \
 
 | Gateway endpoint | Purpose |
 |---|---|
-| `GET /gateway/ping` | Gateway liveness (Docker healthcheck) |
-| `GET /gateway/health` | Probes each worker. `200` if at least one is up |
-| everything else | Forwarded to a free worker (`/`, `/health`, `/api/...`) |
+| `GET /gateway/ping` | Gateway liveness (Docker healthcheck). The only route without the API key |
+| `GET /gateway/health` | Probes each worker: state and last MT5 error. `200` if at least one is up |
+| `GET /gateway/queue` | Load and estimated wait for a new request |
+| `POST /api/account/info`, `/api/account/history`, `/api/positions`, `/api/orders` | Forwarded to a free worker |
 
-Status codes the gateway adds: `401` bad/missing API key, `503` all terminals busy for
-`QUEUE_TIMEOUT` seconds or Windows still booting, `504` an MT5 call exceeded `REQUEST_TIMEOUT`.
+Status codes: `401` bad/missing API key or MT5 refused the login (wrong password / account
+unknown on that server), `503` no healthy terminal free within `QUEUE_TIMEOUT` s or the terminal
+not reachable, `504` an MT5 call exceeded `REQUEST_TIMEOUT`. Error `detail` carries MT5's own
+code and message, e.g. `(-6) Authorization failed`.
 
 ## Seeing the Windows desktop / debugging
 
@@ -106,17 +115,23 @@ Useful files inside Windows:
 - If the broker's server name isn't found, open `C:\MT5\t1\terminal64.exe` once in the
   viewer, use *File → Open an Account*, and search for the broker so the terminal learns
   its servers. Or copy the broker's `servers.dat` into each `C:\MT5\tN\Config\`.
+- `(-10005) IPC timeout`: the terminal doesn't accept Python's commands. The supervisor
+  writes `[Experts] Enabled=1, AllowLiveTrading=1, Account=0, Profile=0` into each
+  `Config\common.ini` before starting it; if *Algo Trading* is still red in a terminal,
+  check `supervisor.log` for the "algo trading settings written" line.
+- Don't log into accounts by hand in the worker terminals without *Save password*: MT5
+  remembers the last account and asks for its password on the next start.
 - To re-run provisioning by hand: run `C:\OEM\install.bat` in the VM.
 
 ## Files
 
 | File | Role |
 |---|---|
-| `app/`, `requirements.txt` | The API that runs inside Windows (copied from the repo root; edit here for deploys) |
+| `app/`, `requirements.txt` | The MT5 worker API that runs inside Windows |
 | `docker-compose.yml` | The services, the persistent volumes, settings passed into the VM |
 | `sync/` | Copies the app, runtime scripts and settings into the `shared` volume on every deploy |
 | `gateway/` | Linux proxy: queue, one request per terminal, API key, health |
 | `windows/oem/install.bat`, `install.ps1` | Run once by dockur after Windows setup: Python, MT5, firewall, no sleep/lock, logon hook |
 | `windows/runtime/start.ps1` | Every boot: sync code, pip install if needed, create terminals, run supervisor |
-| `windows/runtime/supervisor.py` | Keeps one worker per terminal alive. Exits on redeploy so `start.ps1` resyncs |
-| `windows/runtime/worker.py` | Runs the unchanged app, pinned to one terminal |
+| `windows/runtime/supervisor.py` | One worker per terminal: watchdog, MT5 settings, exits on redeploy so `start.ps1` resyncs |
+| `windows/runtime/worker.py` | Starts the worker API for one terminal (port and terminal path from the supervisor) |

@@ -1,10 +1,10 @@
-# mt5_service.py
-"""One long-lived MT5 terminal per worker process.
+"""One long-lived MT5 terminal per worker process (MT5_TERMINAL_PATH, set by the supervisor).
 
 The terminal is opened on the first request, with that request's account (an MT5 opened
-without an account blocks on its login window), and then stays open. Later requests switch accounts inside that terminal (initialize with credentials), instead of
-starting and shutting down a terminal on every call (that took seconds and often
-timed out before the login finished, which surfaced as "wrong password").
+without an account blocks on its login window), and then stays open. Later requests switch
+accounts inside that terminal with initialize(credentials), instead of starting and shutting
+down a terminal on every call (that took seconds and often timed out before the login
+finished, which surfaced as "wrong password").
 
 The live session is reused only when the same login + server + password asks
 again. The password is compared by hash, so nobody can read an account that is
@@ -12,6 +12,7 @@ already logged in without knowing its password.
 """
 
 import hashlib
+import os
 import threading
 import time
 from contextlib import contextmanager
@@ -24,6 +25,8 @@ from loguru import logger
 
 server_tz = pytz.timezone('Europe/London')  # Common for many brokers
 
+# This worker's own portable terminal: two workers never share a logged-in terminal.
+TERMINAL_PATH = os.environ["MT5_TERMINAL_PATH"]
 INIT_TIMEOUT_MS = 60_000
 
 # MT5 last_error codes (MetaTrader5 Python docs).
@@ -94,7 +97,10 @@ def _login(login_id: int, password: str, server: str) -> None:
     # MetaQuotes-Demo failed" for a MEXAtlantic-Real account).
     logger.info(f"Connecting {login_id}@{server}")
     _session["key"] = _session["login"] = None
-    if not mt5.initialize(login=login_id, password=password, server=server, timeout=INIT_TIMEOUT_MS):
+    if not mt5.initialize(
+        TERMINAL_PATH, portable=True, login=login_id, password=password, server=server,
+        timeout=INIT_TIMEOUT_MS,
+    ):
         code, _ = _last_error()
         raise _fail(login_id, server, shutdown=code in IPC_ERRORS)
     info = mt5.account_info()

@@ -8,7 +8,8 @@ never read each other's data.
 Scheduling: a free worker that is already logged into the requested account is
 preferred (no re-login needed); otherwise the worker idle the longest is used.
 GET /gateway/queue reports load and an estimated wait so callers can show it.
-Paths, bodies and status codes are passed through unchanged.
+Paths, bodies and status codes are passed through unchanged. Every route needs the API key
+except /gateway/ping (the Docker healthcheck).
 """
 
 import asyncio
@@ -184,6 +185,10 @@ def authorized(request: Request) -> bool:
     return secrets.compare_digest(request.headers.get("x-api-key", ""), GATEWAY_API_KEY)
 
 
+def unauthorized() -> JSONResponse:
+    return JSONResponse(status_code=401, content={"detail": "Invalid or missing X-API-Key."})
+
+
 def login_of(body: bytes) -> Optional[int]:
     try:
         value = json.loads(body or b"{}").get("login")
@@ -202,13 +207,16 @@ async def gateway_ping() -> dict:
 async def gateway_queue(request: Request) -> JSONResponse:
     """Load and estimated wait for a new request (counts only, no account data)."""
     if not authorized(request):
-        return JSONResponse(status_code=401, content={"detail": "Invalid or missing X-API-Key."})
+        return unauthorized()
     return JSONResponse(content=sched.status())
 
 
 @app.get("/gateway/health")
-async def gateway_health() -> JSONResponse:
-    """Probes every worker directly (bypasses the queue). 200 if at least one is up."""
+async def gateway_health(request: Request) -> JSONResponse:
+    """Probes every worker directly (bypasses the queue). 200 if at least one is up.
+    Needs the API key: worker errors can name the account a terminal is on."""
+    if not authorized(request):
+        return unauthorized()
     results = await asyncio.gather(*(probe_worker(w) for w in WORKERS))
     up = sum(r["up"] for r in results)
     return JSONResponse(
@@ -218,10 +226,10 @@ async def gateway_health() -> JSONResponse:
     )
 
 
-@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
+@app.api_route("/{path:path}", methods=["GET", "POST"])
 async def proxy(path: str, request: Request) -> Response:
-    if request.method != "OPTIONS" and path not in ("", "health") and not authorized(request):
-        return JSONResponse(status_code=401, content={"detail": "Invalid or missing X-API-Key."})
+    if not authorized(request):
+        return unauthorized()
 
     body = await request.body()
     login = login_of(body)

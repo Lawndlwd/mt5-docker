@@ -65,6 +65,44 @@ def kill_terminal(i: int) -> None:
     )
 
 
+# MT5 [Experts] settings the Python API needs (MetaTrader 5 help, "Platform Start"):
+# algo trading on, and NOT switched off when the account changes (Account=0). With the
+# default Account=1, every account switch disabled algo trading and Python got IPC timeouts.
+EXPERTS = {"Enabled": "1", "AllowLiveTrading": "1", "Account": "0", "Profile": "0"}
+
+
+def set_experts(i: int) -> None:
+    """Writes EXPERTS into the terminal's Config\\common.ini (terminal must be closed).
+
+    MT5 stores this file as UTF-16 LE with a BOM; any other encoding is kept as read.
+    """
+    ini = Path(terminal_path(i)).parent / "Config" / "common.ini"
+    try:
+        raw = ini.read_bytes() if ini.exists() else b""
+        utf16 = raw.startswith(b"\xff\xfe")
+        text = raw.decode("utf-16") if utf16 else raw.decode("utf-8", errors="replace")
+        lines = text.splitlines()
+        start = next((n for n, l in enumerate(lines) if l.strip().lower() == "[experts]"), None)
+        if start is None:
+            lines += ["", "[Experts]"] + [f"{k}={v}" for k, v in EXPERTS.items()]
+        else:
+            end = next((n for n in range(start + 1, len(lines)) if lines[n].strip().startswith("[")), len(lines))
+            seen = set()
+            for n in range(start + 1, end):
+                key = lines[n].split("=", 1)[0].strip()
+                if key in EXPERTS:
+                    lines[n] = f"{key}={EXPERTS[key]}"
+                    seen.add(key)
+            missing = [f"{k}={v}" for k, v in EXPERTS.items() if k not in seen]
+            lines[end:end] = missing
+        out = "\r\n".join(lines) + "\r\n"
+        ini.parent.mkdir(parents=True, exist_ok=True)
+        ini.write_bytes(out.encode("utf-16") if (utf16 or not raw) else out.encode("utf-8"))
+        log(f"terminal {i}: algo trading settings written to {ini}")
+    except OSError as e:
+        log(f"terminal {i}: could not write {ini}: {e}")
+
+
 def kill_worker(i: int, proc) -> None:
     """Stops the worker process tree and the MT5 terminal it drives."""
     if proc is not None and proc.poll() is None:
@@ -95,6 +133,8 @@ def share_fingerprint():
 
 def spawn(i: int) -> subprocess.Popen:
     kill_terminal(i)  # start clean: never attach to a leftover (possibly frozen) terminal
+    time.sleep(2)  # let the terminal release its files before editing its config
+    set_experts(i)
     log_path = LOGS / f"worker-{i}.log"
     if log_path.exists() and log_path.stat().st_size > MAX_LOG_BYTES:
         log_path.replace(log_path.with_suffix(".log.1"))

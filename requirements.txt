@@ -1,7 +1,5 @@
 fastapi
 uvicorn
 MetaTrader5
-python-dotenv
-pydantic
 loguru
 pytz
