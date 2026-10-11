@@ -27,7 +27,7 @@ from fastapi.responses import JSONResponse
 
 WORKER_HOST = os.getenv("WORKER_HOST", "windows")
 WORKER_BASE_PORT = int(os.getenv("WORKER_BASE_PORT", "9001"))
-MT5_INSTANCES = int(os.getenv("MT5_INSTANCES", "2"))
+MT5_INSTANCES = int(os.getenv("MT5_INSTANCES", "1"))
 GATEWAY_API_KEY = os.getenv("GATEWAY_API_KEY", "")
 QUEUE_TIMEOUT = float(os.getenv("QUEUE_TIMEOUT", "60"))
 REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "120"))

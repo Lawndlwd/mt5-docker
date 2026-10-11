@@ -1,6 +1,6 @@
 # Runs at every logon (from \\host.lan\Data\runtime, via C:\mt5api\boot.cmd).
 # Syncs the app from the repo share, updates dependencies when requirements.txt
-# changes, prepares one portable MT5 terminal per worker and runs the supervisor.
+# changes, and runs the supervisor.
 # Returns when the supervisor detects new files on the share; boot.cmd then runs it again.
 
 $ErrorActionPreference = "Stop"
@@ -12,21 +12,22 @@ New-Item -ItemType Directory -Force -Path "$Root\logs" | Out-Null
 Start-Transcript -Path "$Root\logs\start.log" -Append | Out-Null
 
 # --- Settings (written to the share by the `sync` service on each deploy) ---
-$settings = @{ MT5_INSTANCES = "2"; WORKER_BASE_PORT = "9001"; LOG_LEVEL = "info" }
+$settings = @{ MT5_INSTANCES = "1"; WORKER_BASE_PORT = "9001"; LOG_LEVEL = "info" }
 $settingsFile = "$Share\settings\settings.env"
 if (Test-Path $settingsFile) {
     foreach ($line in Get-Content $settingsFile) {
         if ($line -match '^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$') { $settings[$Matches[1]] = $Matches[2] }
     }
 }
-$instances = [int]$settings.MT5_INSTANCES
-if ($instances -lt 1 -or $instances -gt 16) { throw "MT5_INSTANCES must be between 1 and 16" }
+$instances = 1  # one installed MT5 terminal, like the old Wine setup
 Write-Host "Settings: $($settings | ConvertTo-Json -Compress)"
 
 # --- Stop a previous run (safe to re-run by hand) --------------------------
 Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
     Where-Object { $_.CommandLine -like "*$Root*" } |
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+# Leftover terminals, including the old portable copies in C:\MT5\tN.
+Get-Process terminal64 -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 
 # --- Sync code from the share --------------------------------------------
 robocopy "$Share\app" "$Root\app" /MIR /R:3 /W:2 /XD __pycache__ /NFL /NDL /NJH /NJS /NP | Out-Null
@@ -47,16 +48,6 @@ if ((Get-Content $hashFile -ErrorAction SilentlyContinue) -ne $hash) {
     & $venvPython -m pip install --disable-pip-version-check -r "$Root\requirements.txt"
     if ($LASTEXITCODE) { throw "pip install failed" }
     Set-Content -Path $hashFile -Value $hash
-}
-
-# --- One portable terminal per worker --------------------------------------
-for ($i = 1; $i -le $instances; $i++) {
-    $dir = "C:\MT5\t$i"
-    if (-not (Test-Path "$dir\terminal64.exe")) {
-        Write-Host "Creating terminal $dir"
-        robocopy $Mt5Install $dir /E /R:3 /W:2 /NFL /NDL /NJH /NJS /NP | Out-Null
-        if ($LASTEXITCODE -ge 8) { throw "robocopy of terminal $i failed with $LASTEXITCODE" }
-    }
 }
 
 # --- Run the supervisor (blocks until the share changes) --------------------

@@ -22,7 +22,7 @@ from pathlib import Path, PureWindowsPath
 ROOT = Path(__file__).resolve().parent
 LOGS = ROOT / "logs"
 SHARE = Path(os.environ.get("MT5_SHARE", r"\\host.lan\Data"))
-INSTANCES = int(os.environ.get("MT5_INSTANCES", "2"))
+INSTANCES = int(os.environ.get("MT5_INSTANCES", "1"))
 BASE_PORT = int(os.environ.get("WORKER_BASE_PORT", "9001"))
 MAX_LOG_BYTES = 20 * 1024 * 1024
 WATCH_INTERVAL = 20

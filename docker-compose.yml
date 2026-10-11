@@ -16,7 +16,7 @@ services:
       context: .
       dockerfile: sync/Dockerfile
     environment:
-      MT5_INSTANCES: ${MT5_INSTANCES:-2}
+      MT5_INSTANCES: 1
       WORKER_BASE_PORT: 9001
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
@@ -64,7 +64,7 @@ services:
     environment:
       WORKER_HOST: windows
       WORKER_BASE_PORT: 9001
-      MT5_INSTANCES: ${MT5_INSTANCES:-2}
+      MT5_INSTANCES: 1
       GATEWAY_API_KEY: ${GATEWAY_API_KEY:-}     # if set, clients must send X-API-Key
       QUEUE_TIMEOUT: ${QUEUE_TIMEOUT:-60}       # seconds to wait for a free terminal
       REQUEST_TIMEOUT: ${REQUEST_TIMEOUT:-120}  # seconds for a single MT5 call
