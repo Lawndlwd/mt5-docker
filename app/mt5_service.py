@@ -1,9 +1,10 @@
 """One long-lived MT5 terminal per worker process (MT5_TERMINAL_PATH, set by the supervisor).
 
-The terminal is started on the first request and then stays open; every account switch is an
-mt5.login() inside it, instead of starting and shutting down a terminal on every call. The
-supervisor turns algo trading on in the terminal's config (without it MT5 ignores Python and
-calls end in "IPC timeout").
+The terminal is opened on the first request, with that request's account (an MT5 opened
+without an account blocks on its login window), and then stays open. Later requests switch
+accounts inside that terminal with initialize(credentials), instead of starting and shutting
+down a terminal on every call (that took seconds and often timed out before the login
+finished, which surfaced as "wrong password").
 
 The live session is reused only when the same login + server + password asks
 again. The password is compared by hash, so nobody can read an account that is
@@ -27,8 +28,6 @@ server_tz = pytz.timezone('Europe/London')  # Common for many brokers
 # This worker's own portable terminal: two workers never share a logged-in terminal.
 TERMINAL_PATH = os.environ["MT5_TERMINAL_PATH"]
 INIT_TIMEOUT_MS = 60_000
-# mt5.login() waits up to this long for the terminal to connect and authorize.
-LOGIN_TIMEOUT_MS = 60_000
 
 # MT5 last_error codes (MetaTrader5 Python docs).
 AUTH_FAILED = -6  # wrong login/password, or the account is unknown on that server
@@ -82,26 +81,26 @@ def _fail(login_id: int, server: str, shutdown: bool) -> MT5Error:
 def _login(login_id: int, password: str, server: str) -> None:
     """Makes `login_id` the active account (caller holds _lock). Raises MT5Error.
 
-    Two steps, as documented for the MetaTrader5 package: initialize(path) starts or attaches to
-    the terminal, then login() authorizes and WAITS for the terminal to connect. Passing the
-    credentials to initialize() on a terminal that was just starting failed at once with
-    "(-6) Authorization failed" before MT5 had even tried (nothing in its Journal).
+    The terminal is opened lazily, WITH the account's credentials: an MT5 opened without an
+    account shows its login / "open an account" window and never answers (IPC timeout). Once
+    open it stays open, and later requests switch accounts with initialize(credentials).
     """
     key = _key(login_id, server, password)
     started = time.monotonic()
-    if mt5.terminal_info() is None:
-        logger.info("Starting MT5 terminal")
-        _session["key"] = _session["login"] = None
-        if not mt5.initialize(TERMINAL_PATH, portable=True, timeout=INIT_TIMEOUT_MS):
-            code, _ = _last_error()
-            raise _fail(login_id, server, shutdown=code in IPC_ERRORS)
-    else:
+    if mt5.terminal_info() is not None:
         info = mt5.account_info()
         if _session["key"] == key and info is not None and info.login == login_id:
             return  # same account and password: reuse the live session
-    logger.info(f"Logging in {login_id}@{server}")
+    # Credentials always go through initialize(): it opens the terminal if needed, otherwise
+    # attaches to the running one and authorizes on THIS server. mt5.login() on a terminal that
+    # was on another broker kept the old server (journal: "'878865': authorization on
+    # MetaQuotes-Demo failed" for a MEXAtlantic-Real account).
+    logger.info(f"Connecting {login_id}@{server}")
     _session["key"] = _session["login"] = None
-    if not mt5.login(login_id, password=password, server=server, timeout=LOGIN_TIMEOUT_MS):
+    if not mt5.initialize(
+        TERMINAL_PATH, portable=True, login=login_id, password=password, server=server,
+        timeout=INIT_TIMEOUT_MS,
+    ):
         code, _ = _last_error()
         raise _fail(login_id, server, shutdown=code in IPC_ERRORS)
     info = mt5.account_info()
