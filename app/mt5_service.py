@@ -27,6 +27,8 @@ server_tz = pytz.timezone('Europe/London')  # Common for many brokers
 
 # This worker's own portable terminal: two workers never share a logged-in terminal.
 TERMINAL_PATH = os.environ["MT5_TERMINAL_PATH"]
+# 0 = the normally installed terminal (data in %APPDATA%), as in the old Wine setup.
+PORTABLE = os.environ.get("MT5_PORTABLE", "1") == "1"
 INIT_TIMEOUT_MS = 60_000
 
 # MT5 last_error codes (MetaTrader5 Python docs).
@@ -98,7 +100,7 @@ def _login(login_id: int, password: str, server: str) -> None:
     logger.info(f"Connecting {login_id}@{server}")
     _session["key"] = _session["login"] = None
     if not mt5.initialize(
-        TERMINAL_PATH, portable=True, login=login_id, password=password, server=server,
+        TERMINAL_PATH, portable=PORTABLE, login=login_id, password=password, server=server,
         timeout=INIT_TIMEOUT_MS,
     ):
         code, _ = _last_error()

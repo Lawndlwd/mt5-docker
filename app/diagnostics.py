@@ -11,7 +11,8 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
-TERMINAL_DIR = Path(os.environ["MT5_TERMINAL_PATH"]).parent
+# config/ and logs/ live next to the exe (portable) or in %APPDATA% (installed terminal).
+TERMINAL_DIR = Path(os.environ.get("MT5_DATA_DIR") or Path(os.environ["MT5_TERMINAL_PATH"]).parent)
 TAIL_BYTES = 512 * 1024
 
 
@@ -45,7 +46,7 @@ def latest_journal() -> Optional[Path]:
 
 
 def experts_settings() -> List[str]:
-    ini = TERMINAL_DIR / "Config" / "common.ini"
+    ini = TERMINAL_DIR / "config" / "common.ini"
     lines = tail(ini, 2000)
     out, inside = [], False
     for line in lines:
@@ -76,3 +77,41 @@ def restart_soon(delay: float = 1.0) -> None:
         time.sleep(delay)
         os._exit(3)
     threading.Thread(target=go, daemon=True).start()
+
+
+def windows() -> List[dict]:
+    """Visible top-level windows (title, class, process id): shows MT5 dialogs waiting for a click."""
+    if os.name != "nt":
+        return []
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    found: List[dict] = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def each(hwnd, _):
+        if user32.IsWindowVisible(hwnd):
+            title = ctypes.create_unicode_buffer(512)
+            cls = ctypes.create_unicode_buffer(256)
+            user32.GetWindowTextW(hwnd, title, 512)
+            user32.GetClassNameW(hwnd, cls, 256)
+            pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if title.value:
+                found.append({"title": title.value, "class": cls.value, "pid": pid.value})
+        return True
+
+    user32.EnumWindows(each, 0)
+    return found
+
+
+def screenshot_png() -> bytes:
+    """PNG of the whole Windows desktop (the interactive session the workers run in)."""
+    import io
+
+    from PIL import ImageGrab
+
+    buf = io.BytesIO()
+    ImageGrab.grab(all_screens=True).save(buf, format="PNG", optimize=True)
+    return buf.getvalue()

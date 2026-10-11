@@ -17,7 +17,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 ROOT = Path(__file__).resolve().parent
 LOGS = ROOT / "logs"
@@ -34,8 +34,32 @@ HEALTH_TIMEOUT = 10
 START_GRACE = int(os.environ.get("START_GRACE", "60"))
 
 
+# Workers listed here drive the normally installed MT5 (not a portable copy), exactly like the
+# old Wine setup: its data folder in %APPDATA% keeps the broker servers it has learned.
+INSTALLED_TERMINAL = r"C:\Program Files\MetaTrader 5\terminal64.exe"
+CLASSIC = {int(x) for x in os.environ.get("MT5_CLASSIC_WORKERS", "1").split(",") if x.strip()}
+
+
 def terminal_path(i: int) -> str:
-    return rf"C:\MT5\t{i}\terminal64.exe"
+    return INSTALLED_TERMINAL if i in CLASSIC else rf"C:\MT5\t{i}\terminal64.exe"
+
+
+def data_dir(i: int) -> Path:
+    """Where the terminal keeps config/ and logs/: next to the exe when portable, otherwise its
+    %APPDATA%\\MetaQuotes\\Terminal\\<id> folder (origin.txt names the install)."""
+    if i not in CLASSIC:
+        return Path(str(PureWindowsPath(terminal_path(i)).parent))
+    base = Path(os.environ.get("APPDATA", "")) / "MetaQuotes" / "Terminal"
+    for d in base.glob("*"):
+        origin = d / "origin.txt"
+        try:
+            raw = origin.read_bytes()
+            text = raw.decode("utf-16") if raw.startswith(b"\xff\xfe") else raw.decode("utf-8", "replace")
+        except OSError:
+            continue
+        if text.strip().lower() == str(PureWindowsPath(INSTALLED_TERMINAL).parent).lower():
+            return d
+    return Path(str(PureWindowsPath(INSTALLED_TERMINAL).parent))
 
 
 def probe(i: int) -> tuple:
@@ -76,7 +100,7 @@ def set_experts(i: int) -> None:
 
     MT5 stores this file as UTF-16 LE with a BOM; any other encoding is kept as read.
     """
-    ini = Path(terminal_path(i)).parent / "Config" / "common.ini"
+    ini = data_dir(i) / "config" / "common.ini"
     try:
         raw = ini.read_bytes() if ini.exists() else b""
         utf16 = raw.startswith(b"\xff\xfe")
@@ -141,6 +165,8 @@ def spawn(i: int) -> subprocess.Popen:
     env = dict(
         os.environ,
         MT5_TERMINAL_PATH=terminal_path(i),
+        MT5_PORTABLE="0" if i in CLASSIC else "1",
+        MT5_DATA_DIR=str(data_dir(i)),
         WORKER_PORT=str(BASE_PORT + i - 1),
         WORKER_LOG=str(log_path),
         SUPERVISOR_LOG=str(LOGS / "supervisor.log"),

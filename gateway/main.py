@@ -250,6 +250,32 @@ async def gateway_logs(request: Request) -> JSONResponse:
         return JSONResponse(status_code=502, content={"detail": f"{worker} unreachable: {type(e).__name__}"})
 
 
+@app.get("/gateway/windows")
+async def gateway_windows(request: Request) -> JSONResponse:
+    """Visible window titles on the Windows desktop (MT5 dialogs waiting for a click)."""
+    if not authorized(request):
+        return unauthorized()
+    worker = worker_url(request) or WORKERS[0]
+    try:
+        r = await client.get(f"{worker}/windows", timeout=15)
+        return JSONResponse(status_code=r.status_code, content=r.json())
+    except (httpx.HTTPError, ValueError) as e:
+        return JSONResponse(status_code=502, content={"detail": f"{worker} unreachable: {type(e).__name__}"})
+
+
+@app.get("/gateway/screen")
+async def gateway_screen(request: Request) -> Response:
+    """PNG screenshot of the Windows desktop (any worker can take it; same session)."""
+    if not authorized(request):
+        return unauthorized()
+    worker = worker_url(request) or WORKERS[0]
+    try:
+        r = await client.get(f"{worker}/screen", timeout=30)
+        return Response(content=r.content, status_code=r.status_code, media_type=r.headers.get("content-type", "image/png"))
+    except httpx.HTTPError as e:
+        return JSONResponse(status_code=502, content={"detail": f"{worker} unreachable: {type(e).__name__}"})
+
+
 @app.post("/gateway/restart")
 async def gateway_restart(request: Request) -> JSONResponse:
     """?worker=N: the worker exits; the supervisor restarts it with a fresh terminal."""
@@ -270,7 +296,7 @@ async def gateway_restart(request: Request) -> JSONResponse:
 async def proxy(path: str, request: Request) -> Response:
     if not authorized(request):
         return unauthorized()
-    if path in ("logs", "restart"):  # worker diagnostics: only via /gateway/logs, /gateway/restart
+    if path in ("logs", "restart", "windows", "screen"):  # worker diagnostics: only via /gateway/logs, /gateway/restart
         return JSONResponse(status_code=404, content={"detail": "Not found"})
 
     body = await request.body()

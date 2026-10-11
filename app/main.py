@@ -45,6 +45,17 @@ def logs(lines: int = 200):
     return diagnostics.collect(max(10, min(lines, 2000)))
 
 
+@app.get("/windows")
+def open_windows():
+    return {"windows": diagnostics.windows()}
+
+
+@app.get("/screen")
+def screen():
+    from fastapi.responses import Response
+    return Response(content=diagnostics.screenshot_png(), media_type="image/png")
+
+
 @app.post("/restart")
 def restart():
     logger.warning("Restart requested through the gateway")

@@ -89,6 +89,8 @@ curl -X POST https://<domain>/api/account/info \
 | `GET /gateway/health` | Probes each worker: state and last MT5 error. `200` if at least one is up |
 | `GET /gateway/queue` | Load and estimated wait for a new request |
 | `GET /gateway/logs?worker=N&lines=200` | Worker N's log, the supervisor log, its MT5 Journal and `[Experts]` settings |
+| `GET /gateway/windows` | Visible window titles on the Windows desktop (MT5 dialogs waiting for a click) |
+| `GET /gateway/screen` | PNG screenshot of the Windows desktop |
 | `POST /gateway/restart?worker=N` | Restart worker N with a fresh terminal (supervisor rewrites its MT5 settings) |
 | `POST /api/account/info`, `/api/account/history`, `/api/positions`, `/api/orders` | Forwarded to a free worker |
 
